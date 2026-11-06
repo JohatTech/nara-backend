@@ -1,0 +1,57 @@
+from pathlib import Path
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_backend_dir = Path(__file__).resolve().parent.parent.parent
+_env_files = [str(_backend_dir / ".env"), ".env"]
+
+
+class Settings(BaseSettings):
+    supabase_url: str
+    supabase_publishable_key: str = Field(
+        validation_alias=AliasChoices(
+            "SUPABASE_PUBLISHABLE_KEY",
+            "supabase_publishable_key",
+            "SUPABASE_ANON_KEY",
+            "supabase_anon_key",
+        )
+    )
+    supabase_secret_key: str = Field(
+        validation_alias=AliasChoices(
+            "SUPABASE_SECRET_KEY",
+            "supabase_secret_key",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "supabase_service_role_key",
+        )
+    )
+    supabase_jwks_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "SUPABASE_JWKS_URL",
+            "supabase_jwks_url",
+        ),
+    )
+    environment: str = "development"
+    cors_origins: str = "http://localhost:3001,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080"
+    model_config = SettingsConfigDict(env_file=_env_files, env_file_encoding="utf-8", extra="ignore")
+
+    def model_post_init(self, __context: object) -> None:
+        if not self.supabase_jwks_url and self.supabase_url:
+            self.supabase_jwks_url = f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    # Backward compatibility properties
+    @property
+    def supabase_anon_key(self) -> str:
+        return self.supabase_publishable_key
+
+    @property
+    def supabase_service_role_key(self) -> str:
+        return self.supabase_secret_key
+
+
+settings = Settings()
