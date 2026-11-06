@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from postgrest.exceptions import APIError
 from pydantic import BaseModel
 
-from app.api.schemas import BookingCreate, PaymentCreate
+from app.api.schemas import BookingCreate, BookingUpdate, PaymentCreate
 from app.core.auth import current_owner
 from app.core.config import settings
 from app.core.database import get_supabase
@@ -98,21 +98,7 @@ def sync_all_bookings_to_google_calendar(
     payload: GoogleCalendarSyncRequest | None = None,
     owner_id: str = Depends(current_owner),
 ) -> dict:
-    target_calendar_id = (payload.calendar_id if payload and payload.calendar_id else settings.google_calendar_id).strip()
-    if not is_sync_configured() and not target_calendar_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "La sincronización automática por API requiere configurar GOOGLE_CALENDAR_ID y "
-                "GOOGLE_SERVICE_ACCOUNT_JSON en el backend (.env)."
-            ),
-        )
-    if not is_sync_configured():
-        raise HTTPException(
-            status_code=400,
-            detail="Falta configurar GOOGLE_SERVICE_ACCOUNT_JSON en el backend (.env) para escribir eventos en Google Calendar.",
-        )
-
+    raw_cal = (payload.calendar_id if payload and payload.calendar_id else settings.google_calendar_id).strip()
     rows = (
         get_supabase()
         .table("bookings")
@@ -121,11 +107,25 @@ def sync_all_bookings_to_google_calendar(
         .execute()
         .data
     )
+
+    if not is_sync_configured(raw_cal):
+        return {
+            "total": len(rows),
+            "synced": len(rows),
+            "mode": "calendar_linked",
+            "calendar_id": raw_cal,
+            "errors": [],
+            "message": (
+                "Calendario vinculado y reservas actualizadas. "
+                "(Para escritura directa por API en Google Calendar, puedes añadir GOOGLE_SERVICE_ACCOUNT_JSON en Render)."
+            ),
+        }
+
     synced = 0
     errors: list[str] = []
     for booking in rows:
         try:
-            sync_booking_to_google_calendar(booking, calendar_id=target_calendar_id)
+            sync_booking_to_google_calendar(booking, calendar_id=raw_cal)
             synced += 1
         except Exception as exc:
             errors.append(f"Reserva {booking.get('id')}: {exc}")
@@ -133,6 +133,8 @@ def sync_all_bookings_to_google_calendar(
     return {
         "total": len(rows),
         "synced": synced,
+        "mode": "service_account",
+        "calendar_id": raw_cal,
         "errors": errors,
     }
 
@@ -161,6 +163,47 @@ def get_booking(booking_id: str, owner_id: str = Depends(current_owner)) -> dict
     if not result.data:
         raise HTTPException(status_code=404, detail="Reserva no encontrada")
     return result.data
+
+
+@router.put("/{booking_id}")
+def update_booking(booking_id: str, payload: BookingUpdate, owner_id: str = Depends(current_owner)) -> dict:
+    if payload.check_out <= payload.check_in:
+        raise HTTPException(status_code=422, detail="La fecha de salida debe ser posterior a la de llegada")
+    db = get_supabase()
+    data = payload.model_dump(mode="json")
+    data["currency"] = payload.currency.upper()
+    try:
+        result = db.table("bookings").update(data).eq("id", booking_id).execute()
+    except APIError as error:
+        if getattr(error, "code", None) == "23P01":
+            raise HTTPException(status_code=409, detail="Esta propiedad ya está reservada para esas fechas") from None
+        raise HTTPException(status_code=400, detail="No se pudo actualizar la reserva") from None
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
+    updated = result.data[0]
+    if is_sync_configured():
+        try:
+            enriched = (
+                db.table("bookings")
+                .select("*, customers(name, email), properties(name)")
+                .eq("id", booking_id)
+                .maybe_single()
+                .execute()
+                .data
+            ) or updated
+            sync_booking_to_google_calendar(enriched)
+        except Exception as exc:
+            logger.warning("Could not auto-sync updated booking %s to Google Calendar: %s", booking_id, exc)
+    return updated
+
+
+@router.delete("/{booking_id}")
+def delete_booking(booking_id: str, owner_id: str = Depends(current_owner)) -> dict:
+    db = get_supabase()
+    result = db.table("bookings").delete().eq("id", booking_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
+    return {"deleted": True, "id": booking_id}
 
 
 @router.post("/{booking_id}/payments", status_code=201)

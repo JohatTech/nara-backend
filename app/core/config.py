@@ -35,20 +35,44 @@ class Settings(BaseSettings):
     environment: str = "development"
     cors_origins: str = "https://nara-frontend-six.vercel.app,http://localhost:3001,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8081,http://127.0.0.1:8081"
     google_calendar_id: str = Field(
-        default="",
+        default="b8f6ffc51bdb6febf595542ee5ffc183fd897643b4c00108aff3506ab43f0d89@group.calendar.google.com",
         validation_alias=AliasChoices("GOOGLE_CALENDAR_ID", "google_calendar_id"),
     )
     google_calendar_timezone: str = Field(
-        default="America/Bogota",
+        default="America/Panama",
         validation_alias=AliasChoices("GOOGLE_CALENDAR_TIMEZONE", "google_calendar_timezone"),
     )
     google_calendar_embed_url: str = Field(
-        default="",
+        default="https://calendar.google.com/calendar/embed?src=b8f6ffc51bdb6febf595542ee5ffc183fd897643b4c00108aff3506ab43f0d89%40group.calendar.google.com&ctz=America%2FPanama",
         validation_alias=AliasChoices("GOOGLE_CALENDAR_EMBED_URL", "google_calendar_embed_url"),
     )
     google_service_account_json: str = Field(
         default="",
-        validation_alias=AliasChoices("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"),
+        validation_alias=AliasChoices(
+            "GOOGLE_SERVICE_ACCOUNT_JSON",
+            "google_service_account_json",
+            "GOOGLE_CREDENTIALS",
+            "google_credentials",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "google_application_credentials",
+            "GOOGLE_SERVICE_ACCOUNT",
+            "SERVICE_ACCOUNT_JSON",
+        ),
+    )
+    google_client_email: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "GOOGLE_CLIENT_EMAIL",
+            "google_client_email",
+            "GOOGLE_SERVICE_ACCOUNT_EMAIL",
+        ),
+    )
+    google_private_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "GOOGLE_PRIVATE_KEY",
+            "google_private_key",
+        ),
     )
     shared_owner_id: str = Field(
         default="",

@@ -11,11 +11,19 @@ class CustomerCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class CustomerUpdate(CustomerCreate):
+    pass
+
+
 class PropertyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     address: str | None = Field(default=None, max_length=500)
     currency: str = Field(default="USD", min_length=3, max_length=3)
-    timezone: str = Field(default="America/Bogota", max_length=80)
+    timezone: str = Field(default="America/Panama", max_length=80)
+
+
+class PropertyUpdate(PropertyCreate):
+    pass
 
 
 class BookingCreate(BaseModel):
@@ -27,6 +35,10 @@ class BookingCreate(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
     source: str | None = Field(default=None, max_length=80)
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class BookingUpdate(BookingCreate):
+    status: str = Field(default="confirmed", max_length=40)
 
 
 class InventoryAdjustment(BaseModel):
@@ -53,6 +65,10 @@ class InventoryItemCreate(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
 
 
+class InventoryItemUpdate(InventoryItemCreate):
+    pass
+
+
 class PaymentCreate(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     currency: str = Field(min_length=3, max_length=3)
@@ -69,3 +85,7 @@ class ExpenseCreate(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     currency: str = Field(min_length=3, max_length=3)
     occurred_on: date
+
+
+class ExpenseUpdate(ExpenseCreate):
+    pass

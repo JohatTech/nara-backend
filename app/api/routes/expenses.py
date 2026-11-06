@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.schemas import ExpenseCreate
+from app.api.schemas import ExpenseCreate, ExpenseUpdate
 from app.core.auth import current_owner
 from app.core.database import get_supabase
 
@@ -28,3 +28,21 @@ def create_expense(payload: ExpenseCreate, owner_id: str = Depends(current_owner
     data = payload.model_dump(mode="json")
     data.update(owner_id=effective_owner_id, currency=payload.currency.upper())
     return db.table("expenses").insert(data).execute().data[0]
+
+
+@router.put("/{expense_id}")
+def update_expense(expense_id: str, payload: ExpenseUpdate, owner_id: str = Depends(current_owner)) -> dict:
+    data = payload.model_dump(mode="json")
+    data["currency"] = payload.currency.upper()
+    result = get_supabase().table("expenses").update(data).eq("id", expense_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Gasto no encontrado")
+    return result.data[0]
+
+
+@router.delete("/{expense_id}")
+def delete_expense(expense_id: str, owner_id: str = Depends(current_owner)) -> dict:
+    result = get_supabase().table("expenses").delete().eq("id", expense_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Gasto no encontrado")
+    return {"deleted": True, "id": expense_id}

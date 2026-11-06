@@ -21,19 +21,29 @@ GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3"
 
 
+def _extract_iframe_src(value: str) -> str:
+    match = re.search(r"""src\s*=\s*["']([^"']+)["']""", value, re.IGNORECASE)
+    if match:
+        return match.group(1).replace("&amp;", "&").strip()
+    return value.strip()
+
+
 def build_embed_url(
     calendar_id: str | None = None,
     tz: str | None = None,
     mode: str = "MONTH",
 ) -> str:
-    if settings.google_calendar_embed_url.strip() and not calendar_id:
-        return settings.google_calendar_embed_url.strip()
+    raw_embed = _extract_iframe_src(settings.google_calendar_embed_url)
+    if raw_embed and not calendar_id:
+        return raw_embed
 
-    cal_id = (calendar_id or settings.google_calendar_id).strip()
+    cal_id = _extract_iframe_src(calendar_id or settings.google_calendar_id)
     if not cal_id:
         return ""
+    if cal_id.startswith("http://") or cal_id.startswith("https://"):
+        return cal_id
 
-    timezone_name = (tz or settings.google_calendar_timezone or "America/Bogota").strip()
+    timezone_name = (tz or settings.google_calendar_timezone or "America/Panama").strip()
     params = {
         "src": cal_id,
         "ctz": timezone_name,
@@ -50,41 +60,76 @@ def build_embed_url(
     return f"https://calendar.google.com/calendar/embed?{urlencode(params)}"
 
 
+def _resolve_calendar_id(calendar_id: str | None = None) -> str:
+    candidates = [
+        calendar_id or "",
+        settings.google_calendar_id,
+        settings.google_calendar_embed_url,
+    ]
+    for raw in candidates:
+        extracted = _extract_iframe_src(raw)
+        if not extracted:
+            continue
+        if not extracted.startswith("http://") and not extracted.startswith("https://"):
+            return extracted
+        m = re.search(r"[?&]src=([^&]+)", extracted)
+        if m:
+            from urllib.parse import unquote
+
+            return unquote(m.group(1)).strip()
+    return ""
+
+
 def _load_service_account_info() -> dict | None:
     raw = settings.google_service_account_json.strip()
-    if not raw:
-        return None
+    if (
+        (raw.startswith('"') and raw.endswith('"'))
+        or (raw.startswith("'") and raw.endswith("'"))
+    ):
+        raw = raw[1:-1].strip()
 
-    # 1. Direct JSON string
-    if raw.startswith("{"):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+    if raw:
+        # 1. Direct JSON string (strict=False allows literal newlines from Render env vars)
+        if raw.startswith("{"):
+            for candidate in (raw, raw.replace('\\"', '"')):
+                try:
+                    return json.loads(candidate, strict=False)
+                except json.JSONDecodeError:
+                    pass
             logger.warning("Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON")
-            return None
 
-    # 2. File path
-    candidate_path = Path(raw)
-    if candidate_path.is_file():
+        # 2. File path
         try:
-            return json.loads(candidate_path.read_text(encoding="utf-8"))
+            candidate_path = Path(raw)
+            if candidate_path.is_file():
+                return json.loads(
+                    candidate_path.read_text(encoding="utf-8"), strict=False
+                )
         except Exception as exc:
             logger.warning("Could not read GOOGLE_SERVICE_ACCOUNT_JSON file: %s", exc)
-            return None
 
-    # 3. Base64-encoded JSON
-    try:
-        decoded = base64.b64decode(raw).decode("utf-8")
-        if decoded.strip().startswith("{"):
-            return json.loads(decoded)
-    except Exception:
-        pass
+        # 3. Base64-encoded JSON
+        try:
+            decoded = base64.b64decode(raw).decode("utf-8")
+            if decoded.strip().startswith("{"):
+                return json.loads(decoded, strict=False)
+        except Exception:
+            pass
+
+    # 4. Separate GOOGLE_CLIENT_EMAIL + GOOGLE_PRIVATE_KEY env vars
+    if settings.google_client_email.strip() and settings.google_private_key.strip():
+        return {
+            "type": "service_account",
+            "client_email": settings.google_client_email.strip(),
+            "private_key": settings.google_private_key.strip(),
+            "token_uri": GOOGLE_TOKEN_URI,
+        }
 
     return None
 
 
-def is_sync_configured() -> bool:
-    return bool(settings.google_calendar_id.strip() and _load_service_account_info())
+def is_sync_configured(calendar_id: str | None = None) -> bool:
+    return bool(_resolve_calendar_id(calendar_id) and _load_service_account_info())
 
 
 def _get_access_token(sa_info: dict) -> str:
@@ -162,7 +207,7 @@ def _build_event_payload(booking: dict) -> dict:
 
 
 def sync_booking_to_google_calendar(booking: dict, calendar_id: str | None = None) -> dict | None:
-    target_calendar = (calendar_id or settings.google_calendar_id).strip()
+    target_calendar = _resolve_calendar_id(calendar_id)
     sa_info = _load_service_account_info()
     if not target_calendar or not sa_info:
         return None
