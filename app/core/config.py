@@ -33,7 +33,27 @@ class Settings(BaseSettings):
         ),
     )
     environment: str = "development"
-    cors_origins: str = "http://localhost:3001,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080"
+    cors_origins: str = "https://nara-frontend-six.vercel.app,http://localhost:3001,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8081,http://127.0.0.1:8081"
+    google_calendar_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_CALENDAR_ID", "google_calendar_id"),
+    )
+    google_calendar_timezone: str = Field(
+        default="America/Bogota",
+        validation_alias=AliasChoices("GOOGLE_CALENDAR_TIMEZONE", "google_calendar_timezone"),
+    )
+    google_calendar_embed_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_CALENDAR_EMBED_URL", "google_calendar_embed_url"),
+    )
+    google_service_account_json: str = Field(
+        default="",
+        validation_alias=AliasChoices("GOOGLE_SERVICE_ACCOUNT_JSON", "google_service_account_json"),
+    )
+    shared_owner_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("SHARED_OWNER_ID", "shared_owner_id"),
+    )
     model_config = SettingsConfigDict(env_file=_env_files, env_file_encoding="utf-8", extra="ignore")
 
     def model_post_init(self, __context: object) -> None:

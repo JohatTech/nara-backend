@@ -1,27 +1,70 @@
+import logging
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from postgrest.exceptions import APIError
+from pydantic import BaseModel
 
 from app.api.schemas import BookingCreate, PaymentCreate
 from app.core.auth import current_owner
+from app.core.config import settings
 from app.core.database import get_supabase
+from app.services.google_calendar import (
+    build_embed_url,
+    generate_ical_feed,
+    is_sync_configured,
+    sync_booking_to_google_calendar,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class GoogleCalendarSyncRequest(BaseModel):
+    calendar_id: str | None = None
 
 
 @router.post("", status_code=201)
 def create_booking(payload: BookingCreate, owner_id: str = Depends(current_owner)) -> dict:
     if payload.check_out <= payload.check_in:
-        raise HTTPException(status_code=422, detail="Check-out must be after check-in")
+        raise HTTPException(status_code=422, detail="La fecha de salida debe ser posterior a la de llegada")
+    db = get_supabase()
+    effective_owner_id = owner_id
+    prop = db.table("properties").select("owner_id").eq("id", payload.property_id).maybe_single().execute().data
+    if prop and prop.get("owner_id"):
+        effective_owner_id = str(prop["owner_id"])
+
+    cust = db.table("customers").select("owner_id").eq("id", payload.customer_id).maybe_single().execute().data
+    if cust and cust.get("owner_id") and str(cust["owner_id"]) != effective_owner_id:
+        try:
+            db.table("customers").update({"owner_id": effective_owner_id}).eq("id", payload.customer_id).execute()
+        except Exception:
+            pass
+
     data = payload.model_dump(mode="json")
-    data.update(owner_id=owner_id, status="confirmed")
+    data.update(owner_id=effective_owner_id, status="confirmed")
     try:
-        return get_supabase().table("bookings").insert(data).execute().data[0]
+        created = db.table("bookings").insert(data).execute().data[0]
     except APIError as error:
         if getattr(error, "code", None) == "23P01":
-            raise HTTPException(status_code=409, detail="This property is already booked for those dates") from None
-        raise HTTPException(status_code=400, detail="Booking could not be saved") from None
+            raise HTTPException(status_code=409, detail="Esta propiedad ya está reservada para esas fechas") from None
+        raise HTTPException(status_code=400, detail="No se pudo guardar la reserva") from None
+
+    if is_sync_configured():
+        try:
+            enriched = (
+                db.table("bookings")
+                .select("*, customers(name, email), properties(name)")
+                .eq("id", created["id"])
+                .maybe_single()
+                .execute()
+                .data
+            ) or created
+            sync_booking_to_google_calendar(enriched)
+        except Exception as exc:
+            logger.warning("Could not auto-sync booking %s to Google Calendar: %s", created.get("id"), exc)
+
+    return created
 
 
 @router.get("")
@@ -30,7 +73,7 @@ def list_bookings(
     to_date: date | None = Query(default=None, alias="to"),
     owner_id: str = Depends(current_owner),
 ) -> list[dict]:
-    query = get_supabase().table("bookings").select("*, customers(name, email), properties(name)").eq("owner_id", owner_id)
+    query = get_supabase().table("bookings").select("*, customers(name, email), properties(name)")
     if from_date:
         query = query.gte("check_in", from_date.isoformat())
     if to_date:
@@ -38,18 +81,98 @@ def list_bookings(
     return query.order("check_in").execute().data
 
 
+@router.get("/google-calendar/config")
+def get_google_calendar_config(owner_id: str = Depends(current_owner)) -> dict:
+    embed_url = build_embed_url()
+    return {
+        "configured": bool(embed_url),
+        "sync_enabled": is_sync_configured(),
+        "calendar_id": settings.google_calendar_id,
+        "timezone": settings.google_calendar_timezone,
+        "embed_url": embed_url,
+    }
+
+
+@router.post("/google-calendar/sync")
+def sync_all_bookings_to_google_calendar(
+    payload: GoogleCalendarSyncRequest | None = None,
+    owner_id: str = Depends(current_owner),
+) -> dict:
+    target_calendar_id = (payload.calendar_id if payload and payload.calendar_id else settings.google_calendar_id).strip()
+    if not is_sync_configured() and not target_calendar_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "La sincronización automática por API requiere configurar GOOGLE_CALENDAR_ID y "
+                "GOOGLE_SERVICE_ACCOUNT_JSON en el backend (.env)."
+            ),
+        )
+    if not is_sync_configured():
+        raise HTTPException(
+            status_code=400,
+            detail="Falta configurar GOOGLE_SERVICE_ACCOUNT_JSON en el backend (.env) para escribir eventos en Google Calendar.",
+        )
+
+    rows = (
+        get_supabase()
+        .table("bookings")
+        .select("*, customers(name, email), properties(name)")
+        .order("check_in")
+        .execute()
+        .data
+    )
+    synced = 0
+    errors: list[str] = []
+    for booking in rows:
+        try:
+            sync_booking_to_google_calendar(booking, calendar_id=target_calendar_id)
+            synced += 1
+        except Exception as exc:
+            errors.append(f"Reserva {booking.get('id')}: {exc}")
+
+    return {
+        "total": len(rows),
+        "synced": synced,
+        "errors": errors,
+    }
+
+
+@router.get("/ical.ics")
+def export_bookings_ical(owner_id: str = Depends(current_owner)) -> Response:
+    rows = (
+        get_supabase()
+        .table("bookings")
+        .select("*, customers(name, email), properties(name)")
+        .order("check_in")
+        .execute()
+        .data
+    )
+    ics_content = generate_ical_feed(rows)
+    return Response(
+        content=ics_content,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="nara-reservas.ics"'},
+    )
+
+
 @router.get("/{booking_id}")
 def get_booking(booking_id: str, owner_id: str = Depends(current_owner)) -> dict:
-    result = get_supabase().table("bookings").select("*").eq("id", booking_id).eq("owner_id", owner_id).maybe_single().execute()
+    result = get_supabase().table("bookings").select("*").eq("id", booking_id).maybe_single().execute()
     if not result.data:
-        raise HTTPException(status_code=404, detail="Booking not found")
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
     return result.data
 
 
 @router.post("/{booking_id}/payments", status_code=201)
 def record_payment(booking_id: str, payload: PaymentCreate, owner_id: str = Depends(current_owner)) -> dict:
-    result = get_supabase().rpc("record_payment", {
-        "p_owner_id": owner_id,
+    db = get_supabase()
+    effective_owner_id = owner_id
+    bk = db.table("bookings").select("owner_id").eq("id", booking_id).maybe_single().execute().data
+    if bk and bk.get("owner_id"):
+        effective_owner_id = str(bk["owner_id"])
+
+    result = db.rpc("record_payment", {
+        "p_owner_id": effective_owner_id,
         "p_booking_id": booking_id,
         "p_amount": str(payload.amount),
         "p_currency": payload.currency.upper(),
@@ -58,5 +181,5 @@ def record_payment(booking_id: str, payload: PaymentCreate, owner_id: str = Depe
         "p_note": payload.note,
     }).execute()
     if not result.data:
-        raise HTTPException(status_code=409, detail="Payment could not be recorded; check the booking, currency, and remaining balance")
+        raise HTTPException(status_code=409, detail="No se pudo registrar el pago; verifica la reserva, la moneda y el saldo restante")
     return result.data

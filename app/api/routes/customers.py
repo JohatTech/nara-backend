@@ -9,7 +9,7 @@ router = APIRouter()
 
 @router.get("")
 def list_customers(owner_id: str = Depends(current_owner)) -> list[dict]:
-    return get_supabase().table("customers").select("*").eq("owner_id", owner_id).order("name").execute().data
+    return get_supabase().table("customers").select("*").order("name").execute().data
 
 
 @router.post("", status_code=201)

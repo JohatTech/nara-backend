@@ -16,12 +16,12 @@ class DashboardService:
         start = datetime.combine(month_start, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         end = datetime.combine(month_end, datetime.min.time(), tzinfo=timezone.utc).isoformat()
         bookings = (
-            self.db.table("bookings").select("id,status").eq("owner_id", owner_id)
+            self.db.table("bookings").select("id,status")
             .gte("check_in", start).lt("check_in", end).execute().data
         )
         active = [b for b in bookings if b["status"] != "cancelled"]
-        payments = self.db.table("payments").select("amount,currency").eq("owner_id", owner_id).gte("received_at", start).lt("received_at", end).execute().data
-        expenses = self.db.table("expenses").select("amount,currency").eq("owner_id", owner_id).gte("occurred_on", month_start.isoformat()).lt("occurred_on", month_end.isoformat()).execute().data
+        payments = self.db.table("payments").select("amount,currency").gte("received_at", start).lt("received_at", end).execute().data
+        expenses = self.db.table("expenses").select("amount,currency").gte("occurred_on", month_start.isoformat()).lt("occurred_on", month_end.isoformat()).execute().data
         gross_by_currency = self._totals(payments)
         expenses_by_currency = self._totals(expenses)
         currencies = gross_by_currency.keys() | expenses_by_currency.keys()
@@ -30,7 +30,6 @@ class DashboardService:
         upcoming = (
             self.db.table("bookings")
             .select("id,check_in,check_out,status,total_amount,currency,customers(name),properties(name)")
-            .eq("owner_id", owner_id)
             .neq("status", "cancelled")
             .gte("check_in", now)
             .order("check_in")
@@ -40,7 +39,6 @@ class DashboardService:
         inventory = (
             self.db.table("inventory_items")
             .select("quantity,low_stock_threshold")
-            .eq("owner_id", owner_id)
             .execute()
             .data
         )
